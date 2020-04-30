@@ -1,0 +1,314 @@
+---
+title: "Activité 6 - Séries temporelles et reproductibilité"
+author: "Andrés Silva"
+date: "26/04/2020"
+output:
+  html_document:
+      number_sections: true
+      highlight: zenburn
+---
+
+<!-- ============================== Code HTML ============================== -->
+
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 14px;
+      text-align: justify;
+      text-justify: inter-word;
+      line-height: 1.6;
+  }
+  
+div {
+text-align: justify;
+text-justify: inter-word;
+line-height: 1.6;
+}
+  
+td {  /* Table  */
+  font-size: 14px;
+}
+h1.title {
+  font-size: 36px;
+  text-align: center;
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+}
+h2 { /* Header 2 */
+    font-size: 20px;
+}
+h3 { /* Header 3 */
+  font-size: 18px;
+  font-family: "Times New Roman", Times, serif;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 14px;
+}
+
+.superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+      overflow-y:none;
+      max-width: none;
+      max-height: 500px;
+  }
+  
+  .tab {
+overflow: hidden;
+border: hidden;
+background-color: #ffffff;
+margin-left: 20%;
+margin-right: 20%;
+}
+
+.tab button {
+background-color: inherit;
+float: center;
+border: none;
+outline: none;
+cursor: pointer;
+padding: 14px 16px;
+transition: 0.3s;
+font-size: 17px;
+}
+
+.tab button:hover {
+background-color: #ddd;
+}
+
+.tab button.active {
+background-color: #3F3F3F;
+color:white;
+}
+
+.tabcontent {
+  border: 1px solid #ccc;
+  padding:25px;
+  margin-left: 5%;
+  margin-right: 5%;
+}
+
+</style>
+
+<!-- ============================== Fin Code HTML ============================== -->
+
+```{r setup, include=FALSE}
+library(formatR)
+library(knitr)
+library(kableExtra)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center")
+```
+
+***
+**Objectif de l'activité** :
+
+   - Modéliser une série temporelle
+   - Analyser les résultats d'une modélisation ETS
+   
+*** 
+
+Premièrement, les modules utilisées dans la résolution du problème sont chargés.
+
+- `tidyverse` sert à manipuler et à organiser les tableaux de données.
+- Le module `lubridate` permet la manipulation des formats des dates et des heures.
+- `forecast` est le module avec lequel la modélisation et la prévision des séries temporelles sont faites.
+
+```{r, modules}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+```
+
+# Création d'une série temporelle
+
+## Lecture des données et modification du format des dates
+
+Les données du fichier _hawai.csv_ sont chargées en utilisant la fonction `read_csv()`. Ce fichier contient des valeurs des moyennes mensuelles de concentration de CO2 (ppm-volume) collectées à Hawai de mars 1958 à décembre 2001.<br>
+
+```{r, lecture donnees}
+hawai <- read_csv("data/hawai.csv")
+hawai %>%
+  sample_n(size = 10)
+```
+<br>
+L'échatillon de données généré par la fonction `sample_n()` montre que les dates sont en format décimal. Le code ci-dessous permet de transformer les dates au format &#171; an - mois - jour &#187; (**ymd**). Pour ce faire, il faut d'abord utiliser la fonction `date_decimal()` du module `lubridate`, qui transfrme la date dans un format **ymd_hms**. Ensuite, la fonction `date()` permet d'extraire la date dans le format **ymd**. Enfin, la fonction `mutate()` du module `dplyr` modifie la colonne _time_ en remplaçant les dates en format décimal par les dates en format ymd. Un aperçu du tableau de données avec les dates dans leur nouveau format est affiché à l'aide de la fonction `head()`.
+
+```{r, date_modif}
+hawai <- hawai %>%
+  mutate(time = date(date_decimal(time)))
+head(hawai)
+```
+
+À l'aide du module `ggplot2`, un graphique des concentrations de CO2 par rapport au temps est fait.
+
+```{r}
+hawai %>%
+  ggplot(aes(x = time, y = CO2)) +
+  geom_line()
+```
+
+Le graphique ci-dessus, montre que la concentration de CO2 a suivi une **tendance** à la hausse pendant la période de mesure et a également présenté une **fluctuation saissonnière**. D'autre part, à première vue, le graphique ne montre aucune **fluctuation cyclique** dans les données.
+
+## Création de la série temporelle
+
+La manipulation des séries temporelles nécessite de la création d'un objet de type `ts` (*time series*) contenant les informations de l'indice temporel et les variables associées à celui-ci. La série temporelle est générée en utilisant la fonction `ts()`, laquelle a besoin du tableau contenant les données, il faut aussi attibuer des valeurs aux paramètres `start` et `frequency`. `start` est dans ce cas un vecteur contenant l'année et le mois dans lesquels la série temporelle commencera (date du prémier enregistrement). `frequency` sert à définir la frequence avec laquelle ont été prises les données, puisque dans ce cas les données sont des moyennes mensuelles, il faut attibuer le numéro 12 (un an a 12 mois).
+
+
+```{r}
+hawai_ts <- ts(hawai %>% dplyr::select(-time),
+               start = c(1958, 3),
+               frequency = 12)
+```
+
+<div class="superbigimage">
+```{r, echo = FALSE, attr.output='style="max-height: 400px;"'}
+hawai_ts
+```
+
+</div>
+
+# Modélisation de la série temporelle
+
+## Création des séries d'entraînement et de test
+
+Avant de modéliser les séries temporelles, il faut les séparer dans une série d'entraînement et une série de test. La première sert à générer le modèle, tandis que la deuxième sert à évaluer sa performance. Environ 70 % des données conforment la série d'entraînement et 30 % la série de test. Dans ce cas, les données ont été prises sur une période de presque 44 ans. Étant donnée que le 70 % de 44 est 30.8, la série d'entraînement contient des données sur environ 31 ans, de mars 1958 à décembre 1988. À son tour la série de test commence en janvier 1989 et finit en décembre 2001. La séparation de la série originale dans les séries d'entrainement et de test se fait à l'aide de la fonction de base `window()`.
+
+```{r}
+hawai_ts_train <- window(hawai_ts, end = c(1988, 12))
+hawai_ts_test <- window(hawai_ts, start = 1989)
+```
+
+## Modèle de prévision ETS
+
+La fonction `ets()` du module `forecast` optimise la méthode SES (*simple exponential smoothing*). De cette façon, la fonction détermine quel est le meilleur modèle en trouvant les paramètres inhérents à l'erreur, à la tendance et à la saison en determinant si :
+
+- L'erreur a un effet additif ou multiplicatif sur le modèle.
+- Il y a une tendance additive, une tendance adoucie ou pas de tendance du tout.
+- Il y a ou non une session, si oui, si elle a un effet additif ou multiplicatif.
+
+Un modèle ETS pour les données de concentration de CO2 à partir de la série d'entraînement est généré ci-dessous.
+
+```{r}
+co2_ets1 <- hawai_ts_train %>% ets()
+co2_ets1
+```
+
+La fonction `ets()` a retenu un modèle `ETS(A,A,A)`, cela signifie que la prévision est régie par un modèle additif de la forme $ŷ_{t + h|t} = l_t + h \times b_t + s_{t - m + h_{m}^+}$. Ainsi, l'erreur, la tendance et la saison sont de type additif. En autre, le modèle a trouvé des valeurs pour les paramètres de lissage $\alpha$, $\beta$ et $\gamma$. L'absence d'une valeur pour le paramètre $\phi$ indique que l'adoucissement n'est pas nécessaire. Ainsi, les équations qui régiront chacune des composantes du modèle de prévision de la concentration de CO2 seront :
+
+- Niveau ($\alpha = 0.6698$) : $l_t = 0.6698 \cdot \left( y_t - s_{t-m} \right)+0.2212 \cdot \left( l_{t-1} + b_{t-1} \right)$
+
+- Tendance ($\beta = 0.003$) : $b_t = 0.003 \cdot \left( l_t + l_{t-1} \right) + 0.997 \cdot b_{t-1}$
+
+- Saison ($\gamma = 0.0002$) : $s_t = 0.0002 \cdot \left( y_t - l_{t-1} - b_{t-1} \right) + 0.9998 \cdot s_{t-m}$
+
+`ets()` calcule également les valeurs initiales du niveau (l), de la tendance (b) et de la saison (s). La fonction `autoplot()` sert à visualiser l'évolution des différentes composantes du modèle. 
+
+```{r}
+autoplot(co2_ets1)
+```
+
+Dans le graphique précedent s'observent la tendance croissante du niveau et les changements de la pente au fil du temps. En autre, la nature additive de l'effet saisonier génére sa fluctuation autour de zéro. Le modèle trouvé peut être utilisé désormais pour effectuer la prévision des concentrations de CO2.
+
+## Prévision et évaluation du modèle
+
+La fonction `forecast()` sert à obtenir des prédictions des séries temporelles. Cette fonction a besoin du nombre de périodes à prédire (paramètre `h`), dans ce cas `h` est égal au nombre de mois compris entre janvier 1989 et décembre 2001 (`r length(hawai_ts_test)`). Le graphique ci-aprés montre les résultats de la prévision, les régions de confiance aux niveaux de 80 % (bleu foncé) et 95 % (bleu clair) et les séries d'entraînement (ligne noire) et de test (ligne grise).
+
+```{r}
+co2_fc1 <- co2_ets1 %>% forecast(h = length(hawai_ts_test))
+
+autoplot(co2_fc1) +
+  autolayer(hawai_ts_test, color = rgb(0, 0, 0, 0.6)) +
+  ylab("Concentration de CO2 (ppm)")
+```
+
+En comparant la série de test et la série de prévision, il est possible de constater que le modèle sous-estime la concentration de CO2 à certaines périodes et la surestime à d'autres. Toutefois, il est possible de dire que le modèle fait une bonne prévision, puisque la série de test et la série des données prévues sont très similaires. La fonction `accuracy()` permet d'évaluer l'exactitude du modèle en calculant différents paramètres comme le RMSE ou l'erreur moyenne absolue échelonée (MASE).
+
+```{r}
+accuracy(co2_fc1, hawai_ts)
+```
+
+Les valeurs des différents paramètres montrent que le modèle a une bonne performance puisque des paramétres tels que RMSE et MASE ne sont pas très élevées et l'erreur moyenne n'est pas si loin de zéro. Le comportement des résidus peut être vérifié à l'aide de la fonction `checkresiduals()`.
+
+```{r}
+checkresiduals(co2_ets1)
+```
+
+Il y a plusieurs pics (lignes noires) qui dépassent les limites tracés par les lignes bleues dans le graphique de corrélation (correlogramme), ce qui indique que la série n'est probablement pas un bruit blanc. Le resultat du test de Ljung-Box confirme que la série n'est pas un bruit blanc pusique sa p-value ($\sim 5.67 \times 10^{-9}$) est inférieure au seuil de 5 %. Enfin, en regardant l'histogramme des résidus il n'est pas évident que les résidus suivent une distribution normale, cependant la p-value du test de Shapiro-Wilk ($\sim 6.06 \times 10^{-7}$) est clairement inférieure à 0.05, ce qui confirme la non-normalité de sa distribution.
+
+En général, le modèle obtenu semble avoir une bonne capacité prédictive et il peut être difficile de l'améliorer. Cependant, sa performance peut être comparée avec celle des modèles obtenus à partir de données transformées. Ci-aprés se montrent les résultats des prévisions obtenues avec deux modéles différents. Pour le premier modèle les données ont été soumises à une transformation logarithmique, qui a été faite en mettant la valeur du paramètre `lambda` ($\lambda$) de la fonction `ets()` à zéro. Le deuxième modèle s'est servi d'une valeur optimale de $lambda$, qui a été estimée par la fonction `forecast::BoxCox.lambda()`. Les données de concentration de CO2 ont été transformées selon la formule $\frac{y_t - 1}{\lambda}$.
+
+<!-- ============================== Code HTML ============================== -->
+
+<div class="tab">
+  <button class="tablinks" onclick="openMod(event, 'Trans1')"id="defaultOpen">Transformation logarithmique</button>
+  <button class="tablinks" onclick="openMod(event, 'Trans2')">Transformation BoxCox</button>
+</div>
+
+<!-- ============================== Fin Code HTML ============================== -->
+
+<div id="Trans1" class="tabcontent">
+
+```{r}
+co2_ets_ln <- hawai_ts_train %>% ets(lambda = 0)
+co2_fc_ln <- co2_ets_ln %>% forecast(h = length(hawai_ts_test))
+co2_fc_ln %>% autoplot() +
+  autolayer(hawai_ts_test, color = rgb(0, 0, 0, 0.6)) +
+  ylab("Concentration de CO2 (ppm)")
+
+accuracy(co2_fc_ln, hawai_ts)
+checkresiduals(co2_ets_ln)
+```
+
+</div>
+
+<div id="Trans2" class="tabcontent">
+
+```{r}
+lamb_opt <- BoxCox.lambda(hawai_ts_train)
+
+co2_ets_bc <- hawai_ts_train %>% ets(lambda = lamb_opt)
+co2_fc_bc <- co2_ets_bc %>% forecast(h = length(hawai_ts_test))
+co2_fc_bc %>% autoplot() +
+  autolayer(hawai_ts_test, color = rgb(0, 0, 0, 0.6)) +
+  ylab("Concentration de CO2 (ppm)")
+
+accuracy(co2_fc_bc, hawai_ts)
+checkresiduals(co2_ets_bc)
+```
+
+</div>
+
+<!-- ============================== Code HTML ============================== -->
+<script>
+function openMod(evt, modTrans) {
+  var i, tabcontent, tablinks;
+  tabcontent = document.getElementsByClassName("tabcontent");
+  for (i = 0; i < tabcontent.length; i++) {
+    tabcontent[i].style.display = "none";
+  }
+  tablinks = document.getElementsByClassName("tablinks");
+  for (i = 0; i < tablinks.length; i++) {
+    tablinks[i].className = tablinks[i].className.replace(" active", "");
+  }
+  document.getElementById(modTrans).style.display = "block";
+  evt.currentTarget.className += " active";
+}
+
+document.getElementById("defaultOpen").click();
+</script>
+
+<!-- ============================== Fin Code HTML ============================== -->
+
+<br>
+Les resultats de l'implementation des modéles obtenus à partir de données transformées ne sont pas très différents de ceux obtenus avec le modéle généré par les données originales. Bien que les paramétres tels que l'erreur moyenne, le RMSE ou le MASE des deux derniers modèles sont inférieurs à ceux du modèle original, les différences ne sont pas très marquées. Cependant, le modèle génerée à partir des données transformées par *Box-Cox* peut être choisi comme le meilleur des trois.
+
+# Conclusion {-}
+
+La série temporelle contenant les données de concentration de CO2 collectées à Hawai a été modélisée en utilisant un modèle ETS. La plupart des opérations de cette activité ont été faites à l'aide du module `forecast` de `R`. Un modèle additif de la forme $ŷ_{t + h|t} = l_t + h \times b_t + s_{t - m + h_{m}^+}$ décrivant la série temporelle étudiée a été trouvé. Ce modèle a généré des prévisions de concentration de CO2 qui n'ont pas été très éloignées des données conformant la série de test. Des modèles alternatifs ont été générés à partir des données transformées par une transformation logarithmique et une transformation Box-Cox, mais ses prévisions ont été similaires à celle obtenue par le modèle original.
+<br>
+<br>
